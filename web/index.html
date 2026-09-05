@@ -42,13 +42,13 @@
         <section class="results-panel" aria-live="polite">
           <div class="results-header"><div><p class="eyebrow">RUNNING RISK PROFILE</p><h2 id="result-title">Awaiting audio</h2></div><div class="api-state" id="api-state">IDLE</div></div>
           <div class="score-row">
-            <div class="score-card"><p>COMBINED RISK</p><div class="gauge" id="gauge"><span id="risk-score">—</span><small>/ 100</small></div><strong id="risk-label">No analysis yet</strong></div>
+            <div class="score-card"><p>RUNNING RISK</p><div class="gauge" id="gauge"><span id="risk-score">—</span><small>/ 100</small></div><strong id="risk-label">No analysis yet</strong><small class="score-context" id="score-context">Aggregates the current call</small></div>
             <div class="timeline-card"><div class="timeline-top"><p>RECENT SEGMENTS</p><span id="segment-count">0 analyzed</span></div><div class="chart" id="chart"><div class="empty-chart">Your segment risk trend appears here.</div></div><div class="chart-axis"><span>EARLIER</span><span>NOW</span></div></div>
           </div>
           <div id="alert-box" class="alert-box hidden"><div class="alert-symbol">!</div><div><strong>Secondary verification recommended</strong><p id="alert-copy">Risk crossed your configured operating threshold.</p></div></div>
           <div class="detail-grid">
-            <article><div class="detail-title"><span>Tier 1</span><small>REAL-TIME</small></div><div class="metric"><strong id="tier1-score">—</strong><span id="tier1-latency">— ms</span></div><p>Lightweight streaming score</p></article>
-            <article><div class="detail-title"><span>Tier 2</span><small>ENSEMBLE</small></div><div class="metric"><strong id="tier2-score">—</strong><span id="tier2-confidence">— confidence</span></div><p>Deep analysis and fusion</p></article>
+            <article><div class="detail-title"><span>Tier 1</span><small>TRAINED CNN</small></div><div class="metric"><strong id="tier1-score">—</strong><span id="tier1-latency">— ms</span></div><p id="tier1-label">Checkpoint model · pending</p></article>
+            <article><div class="detail-title"><span>Tier 2</span><small>HEURISTIC</small></div><div class="metric"><strong id="tier2-score">—</strong><span id="tier2-confidence">— confidence</span></div><p id="tier2-label">Heuristic ensemble · pending</p></article>
             <article><div class="detail-title"><span>Consistency</span><small>REFERENCE</small></div><div class="metric"><strong id="consistency">—</strong></div><p id="consistency-copy">No comparison performed</p></article>
           </div>
           <section class="breakdown"><div class="breakdown-heading"><p class="eyebrow">SIGNAL BREAKDOWN</p><span id="feature-status">PENDING</span></div><div id="features" class="feature-list"><p class="muted">Feature insights will be shown here after analysis.</p></div><div class="contributions"><p>ENSEMBLE CONTRIBUTIONS</p><div id="contribution-bars" class="bar-list"></div></div></section>
