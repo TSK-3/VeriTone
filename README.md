@@ -133,15 +133,16 @@ Install the development extra as described above, then run:
 python -m pytest
 ```
 
-## Optional Tier 1 CNN checkpoint
+## Tier 1 CNN checkpoint
 
-The ML extra enables the optional PyTorch Tier 1 adapter:
+Tier 1 always uses the PyTorch checkpoint adapter when the service runs. The ML extra
+enables that adapter:
 
 ```bash
 python -m pip install -e ".[ml]"
 ```
 
-Set `TIER1_CHECKPOINT` to a checkpoint containing either a plain PyTorch state
+Set `TIER1_CHECKPOINT` to a trained checkpoint containing either a plain PyTorch state
 dictionary or a `{"model_state_dict": state_dict}` object, then start the server:
 
 **Windows PowerShell**
@@ -160,6 +161,9 @@ python -m uvicorn voice_detection.api:app --reload
 
 The checkpoint model expects 16 kHz mono PCM input. Validate accuracy, p95 latency,
 and the model's parameter budget on the target hardware before deployment.
+
+The service refuses to start when `TIER1_CHECKPOINT` is missing or invalid. Tier 2
+continues to use the deterministic heuristic ensemble.
 
 ## Project structure
 

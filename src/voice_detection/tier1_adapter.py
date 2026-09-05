@@ -1,4 +1,4 @@
-"""Optional checkpoint-backed Tier 1 inference adapter."""
+"""Checkpoint-backed Tier 1 inference adapter."""
 
 from __future__ import annotations
 
@@ -13,22 +13,19 @@ class Tier1CheckpointScorer:
     """Loads a training checkpoint when ``TIER1_CHECKPOINT`` is configured."""
 
     def __init__(self, checkpoint_path: str | None = None) -> None:
-        self.available = False
-        self.model = None
         path = checkpoint_path or os.getenv("TIER1_CHECKPOINT")
         if not path:
-            return
+            raise RuntimeError("TIER1_CHECKPOINT must point to a trained Tier 1 checkpoint")
         if torch is None or Tier1CausalCNN is None:
             raise RuntimeError("install the 'ml' extra to use a Tier 1 CNN checkpoint")
         self.model = Tier1CausalCNN()
         checkpoint = torch.load(path, map_location="cpu", weights_only=True)
         self.model.load_state_dict(checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint)
         self.model.eval()
-        self.available = True
 
     def score(self, audio: AudioSegment) -> float:
-        if not self.available or self.model is None or torch is None:
-            raise RuntimeError("Tier 1 CNN checkpoint is unavailable")
+        if torch is None:
+            raise RuntimeError("install the 'ml' extra to use a Tier 1 CNN checkpoint")
         if audio.sample_rate != SAMPLE_RATE:
             raise ValueError("Tier 1 CNN expects 16 kHz mono audio")
         values = struct.unpack(f"<{len(audio.samples) // 2}h", audio.samples)

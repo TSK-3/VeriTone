@@ -10,7 +10,7 @@ def pcm(values: list[int]) -> bytes:
 
 
 def test_analysis_exposes_prd_contract_without_features_when_disabled() -> None:
-    result = DetectionService(alert_threshold=0).analyze(
+    result =     DetectionService(alert_threshold=0, require_tier1_checkpoint=False).analyze(
         AudioSegment(pcm([50, -50] * 8000), 16000, 1.0), start_s=2.5, speaker_similarity=0.4, include_features=False
     )
     record = result.audit_record()
@@ -26,7 +26,7 @@ def test_analysis_exposes_prd_contract_without_features_when_disabled() -> None:
 def test_similarity_must_be_a_probability() -> None:
     audio = AudioSegment(pcm([1, -1] * 100), 16000, 0.0125)
     try:
-        DetectionService().analyze(audio, 0, speaker_similarity=1.2)
+        DetectionService(require_tier1_checkpoint=False).analyze(audio, 0, speaker_similarity=1.2)
     except ValueError as error:
         assert "between 0 and 1" in str(error)
     else:
@@ -36,7 +36,7 @@ def test_similarity_must_be_a_probability() -> None:
 def test_alert_requires_aggregated_evidence() -> None:
     audio = AudioSegment(pcm([50, -50] * 8000), 16000, 1.0)
     aggregator = RunningRiskAggregator(alert_threshold=0.1, min_evidence=3)
-    result = DetectionService().analyze(audio, 0)
+    result = DetectionService(require_tier1_checkpoint=False).analyze(audio, 0)
     assert aggregator.add(result)[2] is False
     assert aggregator.add(result)[2] is False
     assert aggregator.add(result)[2] is True

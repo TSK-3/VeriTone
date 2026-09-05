@@ -64,10 +64,10 @@ class HeuristicTier2Scorer:
 
 
 class DetectionService:
-    def __init__(self, alert_threshold: float = 0.7) -> None:
+    def __init__(self, alert_threshold: float = 0.7, require_tier1_checkpoint: bool = True) -> None:
         self.alert_threshold = alert_threshold
         self._tier1 = HeuristicTier1Scorer()
-        self._tier1_checkpoint = Tier1CheckpointScorer()
+        self._tier1_checkpoint = Tier1CheckpointScorer() if require_tier1_checkpoint else None
         self._tier2 = HeuristicTier2Scorer()
 
     def analyze(self, audio: AudioSegment, start_s: float, speaker_similarity: float | None = None, include_features: bool = True) -> SegmentResult:
@@ -88,7 +88,10 @@ class DetectionService:
         started = time.perf_counter()
         # A model checkpoint takes precedence. Heuristics keep the demo operable
         # until training has produced a checkpoint.
-        score = self._tier1_checkpoint.score(audio) if self._tier1_checkpoint.available else self._tier1.score(stats)
+        if self._tier1_checkpoint is None:
+            score = self._tier1.score(stats)
+        else:
+            score = self._tier1_checkpoint.score(audio)
         return Tier1Result(score, label(score), round((time.perf_counter() - started) * 1000))
 
     def _run_tier2(self, stats: SignalStats) -> Tier2Result:
