@@ -143,7 +143,10 @@ python -m pip install -e ".[ml]"
 ```
 
 Set `TIER1_CHECKPOINT` to a trained checkpoint containing either a plain PyTorch state
-dictionary or a `{"model_state_dict": state_dict}` object, then start the server:
+dictionary or a `{"model_state_dict": state_dict}` object, then start the server. For
+the local SIH layout, VeriTone automatically detects
+`../sih/checkpoints/tier1_mlaad.pt`; setting the variable explicitly is recommended
+for other layouts:
 
 **Windows PowerShell**
 

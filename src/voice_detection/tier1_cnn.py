@@ -82,7 +82,10 @@ if torch is not None:
         def forward(self, waveform: Tensor) -> Tensor:
             # center=False avoids looking into future audio frames during streaming.
             spectrum = torch.stft(waveform, self.n_fft, self.hop_length, window=self.window, center=False, return_complex=True).abs().pow(2)
-            return torch.log(torch.clamp(torch.matmul(self.mel_bank, spectrum), min=1e-6))
+            log_mel = torch.log(torch.clamp(torch.matmul(self.mel_bank, spectrum), min=1e-6))
+            mean = log_mel.mean(dim=(1, 2), keepdim=True)
+            std = log_mel.std(dim=(1, 2), keepdim=True).clamp_min(1e-3)
+            return (log_mel - mean) / std
 
 
     class Tier1CausalCNN(nn.Module):
@@ -92,12 +95,13 @@ if torch is not None:
             super().__init__()
             self.frontend = LogMelFrontend(n_mels=n_mels)
             self.features = nn.Sequential(
-                CausalConv1d(n_mels, 32, kernel_size=7), nn.BatchNorm1d(32), nn.ReLU(),
-                CausalConv1d(32, 64, kernel_size=5), nn.BatchNorm1d(64), nn.ReLU(), CausalMaxPool1d(),
-                CausalConv1d(64, 128, kernel_size=3, dilation=2), nn.BatchNorm1d(128), nn.ReLU(),
-                CausalConv1d(128, 128, kernel_size=3, dilation=4), nn.BatchNorm1d(128), nn.ReLU(),
+                CausalConv1d(n_mels, 64, kernel_size=7), nn.BatchNorm1d(64), nn.ReLU(),
+                CausalConv1d(64, 128, kernel_size=5), nn.BatchNorm1d(128), nn.ReLU(), CausalMaxPool1d(),
+                CausalConv1d(128, 256, kernel_size=3, dilation=2), nn.BatchNorm1d(256), nn.ReLU(),
+                CausalConv1d(256, 256, kernel_size=3, dilation=4), nn.BatchNorm1d(256), nn.ReLU(),
+                CausalConv1d(256, 256, kernel_size=3, dilation=8), nn.BatchNorm1d(256), nn.ReLU(),
             )
-            self.head = nn.Sequential(nn.AdaptiveAvgPool1d(1), nn.Flatten(), nn.Linear(128, 64), nn.ReLU(), nn.Dropout(dropout), nn.Linear(64, 1))
+            self.head = nn.Sequential(nn.AdaptiveAvgPool1d(1), nn.Flatten(), nn.Linear(256, 128), nn.ReLU(), nn.Dropout(dropout), nn.Linear(128, 1))
 
         def forward(self, waveform: Tensor) -> Tensor:
             """Return logits shaped [batch]; apply BCEWithLogitsLoss during training."""
