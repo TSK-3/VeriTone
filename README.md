@@ -176,19 +176,6 @@ web/                 Browser dashboard
 tests/               Service contract tests
 ```
 
-## Production considerations
-
-This repository is an MVP and should not be used as the sole control for
-authentication, payments, access control, or other high-impact decisions. Before
-production use:
-
-1. Replace heuristic scorers with evaluated anti-spoofing models.
-2. Add authentication, authorization, rate limiting, and request-size limits.
-3. Move audit records to a durable, encrypted, access-controlled feature-only store.
-4. Add monitoring, model/version tracking, and retention controls.
-5. Benchmark with representative codecs, devices, languages, and datasets such as
-   ASVspoof.
-
 ## License
 
 No license has been selected for this repository yet.
