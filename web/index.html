@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Verity — Voice Integrity Console</title>
+    <title>VeriTone — Voice Integrity Console</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -13,9 +13,8 @@
     <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
     <main class="shell">
       <header>
-        <a class="brand" href="/"><span class="brand-mark">V</span><span>verity</span></a>
+        <a class="brand" href="/"><span class="brand-mark">V</span><span>VeriTone</span></a>
         <div class="connection"><span class="status-dot"></span><span id="connection-label">Detector ready</span></div>
-        <button class="quiet-button" id="demo-button">Load sample view</button>
       </header>
 
       <section class="hero">
@@ -33,6 +32,11 @@
           <label class="toggle-row"><input id="feature-only" type="checkbox" /><span class="toggle"></span><span>Feature-only audit mode</span></label>
           <button id="analyze-button" class="primary-button" disabled>Analyze segment <span>→</span></button>
           <p id="form-message" class="form-message" aria-live="polite">Choose an audio segment to begin.</p>
+          <section class="validation-guide">
+            <p class="eyebrow">VALIDATION GUIDE</p>
+            <p>Score each dataset clip separately. Upload an <strong>original</strong> clip first, then a <strong>spoof</strong> clip using the same call reference.</p>
+            <p class="guide-note">Lower risk is expected for original speech; higher risk is expected for spoofed speech. The result is a risk signal, not ground-truth accuracy.</p>
+          </section>
         </aside>
 
         <section class="results-panel" aria-live="polite">
@@ -50,7 +54,7 @@
           <section class="breakdown"><div class="breakdown-heading"><p class="eyebrow">SIGNAL BREAKDOWN</p><span id="feature-status">PENDING</span></div><div id="features" class="feature-list"><p class="muted">Feature insights will be shown here after analysis.</p></div><div class="contributions"><p>ENSEMBLE CONTRIBUTIONS</p><div id="contribution-bars" class="bar-list"></div></div></section>
         </section>
       </section>
-      <footer><span>VERITY / SIH26104</span><span>Audio is not written to disk or included in the audit trail.</span></footer>
+      <footer><span>VERITONE / SIH26104</span><span>Audio is not written to disk or included in the audit trail.</span></footer>
     </main>
     <script src="app.js"></script>
   </body>

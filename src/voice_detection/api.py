@@ -10,7 +10,7 @@ from .audio import decode_wav
 from .aggregation import RunningRiskAggregator
 from .service import DetectionService
 
-app = FastAPI(title="Voice Clone Detection API", version="0.1.0")
+app = FastAPI(title="VeriTone API", version="0.1.0")
 service = DetectionService()
 audit: dict[str, list[dict]] = defaultdict(list)
 aggregators: dict[str, RunningRiskAggregator] = {}
