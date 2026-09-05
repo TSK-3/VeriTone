@@ -64,7 +64,7 @@ class HeuristicTier2Scorer:
 
 
 class DetectionService:
-    def __init__(self, alert_threshold: float = 0.7, require_tier1_checkpoint: bool = True) -> None:
+    def __init__(self, alert_threshold: float = 0.5, require_tier1_checkpoint: bool = True) -> None:
         self.alert_threshold = alert_threshold
         self._tier1 = HeuristicTier1Scorer()
         self._tier1_checkpoint = Tier1CheckpointScorer() if require_tier1_checkpoint else None
