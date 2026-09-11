@@ -82,28 +82,54 @@ if torch is not None:
         def forward(self, waveform: Tensor) -> Tensor:
             # center=False avoids looking into future audio frames during streaming.
             spectrum = torch.stft(waveform, self.n_fft, self.hop_length, window=self.window, center=False, return_complex=True).abs().pow(2)
-            return torch.log(torch.clamp(torch.matmul(self.mel_bank, spectrum), min=1e-6))
+            log_mel = torch.log(torch.clamp(torch.matmul(self.mel_bank, spectrum), min=1e-6))
+            # Per-utterance causal-safe normalization: statistics are computed over
+            # the current window only, so no future call context leaks in.
+            # Stabilizes training across varying microphone gains.
+            mean = log_mel.mean(dim=(1, 2), keepdim=True)
+            std = log_mel.std(dim=(1, 2), keepdim=True).clamp_min(1e-3)
+            return (log_mel - mean) / std
 
 
     class Tier1CausalCNN(nn.Module):
-        """Conv(32,7) → Conv(64,5)+pool → dilated Conv(128,3)x2 → GAP → head."""
+        """Conv(64,7) → Conv(128,5)+pool → dilated Conv(256,3)x3 → GAP → head."""
 
-        def __init__(self, n_mels: int = 64, dropout: float = 0.3) -> None:
+        def __init__(self, n_mels: int = 64, dropout: float = 0.3,
+                     freq_mask: int = 12, time_mask: int = 30) -> None:
             super().__init__()
+            self.freq_mask, self.time_mask = freq_mask, time_mask
             self.frontend = LogMelFrontend(n_mels=n_mels)
             self.features = nn.Sequential(
-                CausalConv1d(n_mels, 32, kernel_size=7), nn.BatchNorm1d(32), nn.ReLU(),
-                CausalConv1d(32, 64, kernel_size=5), nn.BatchNorm1d(64), nn.ReLU(), CausalMaxPool1d(),
-                CausalConv1d(64, 128, kernel_size=3, dilation=2), nn.BatchNorm1d(128), nn.ReLU(),
-                CausalConv1d(128, 128, kernel_size=3, dilation=4), nn.BatchNorm1d(128), nn.ReLU(),
+                CausalConv1d(n_mels, 64, kernel_size=7), nn.BatchNorm1d(64), nn.ReLU(),
+                CausalConv1d(64, 128, kernel_size=5), nn.BatchNorm1d(128), nn.ReLU(), CausalMaxPool1d(),
+                CausalConv1d(128, 256, kernel_size=3, dilation=2), nn.BatchNorm1d(256), nn.ReLU(),
+                CausalConv1d(256, 256, kernel_size=3, dilation=4), nn.BatchNorm1d(256), nn.ReLU(),
+                CausalConv1d(256, 256, kernel_size=3, dilation=8), nn.BatchNorm1d(256), nn.ReLU(),
             )
-            self.head = nn.Sequential(nn.AdaptiveAvgPool1d(1), nn.Flatten(), nn.Linear(128, 64), nn.ReLU(), nn.Dropout(dropout), nn.Linear(64, 1))
+            self.head = nn.Sequential(nn.AdaptiveAvgPool1d(1), nn.Flatten(), nn.Linear(256, 128), nn.ReLU(), nn.Dropout(dropout), nn.Linear(128, 1))
+
+        def _spec_augment(self, log_mel: Tensor) -> Tensor:
+            # Training-only SpecAugment-lite: one frequency + one time mask.
+            # Masks zero out bands of the *current window*, so nothing leaks
+            # across windows and causality is preserved.
+            if self.freq_mask > 0:
+                width = int(torch.randint(0, self.freq_mask + 1, (1,)).item())
+                start = int(torch.randint(0, max(1, log_mel.size(1) - width + 1), (1,)).item())
+                log_mel[:, start:start + width, :] = log_mel.mean()
+            if self.time_mask > 0:
+                width = int(torch.randint(0, self.time_mask + 1, (1,)).item())
+                start = int(torch.randint(0, max(1, log_mel.size(2) - width + 1), (1,)).item())
+                log_mel[:, :, start:start + width] = log_mel.mean()
+            return log_mel
 
         def forward(self, waveform: Tensor) -> Tensor:
             """Return logits shaped [batch]; apply BCEWithLogitsLoss during training."""
             if waveform.ndim != 2:
                 raise ValueError("expected waveform tensor with shape [batch, samples]")
-            return self.head(self.features(self.frontend(waveform))).squeeze(-1)
+            log_mel = self.frontend(waveform)
+            if self.training:
+                log_mel = self._spec_augment(log_mel)
+            return self.head(self.features(log_mel)).squeeze(-1)
 
         @property
         def parameter_count(self) -> int:

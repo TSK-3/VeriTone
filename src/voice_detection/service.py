@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import statistics
+import struct
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from .audio import AudioSegment
 from .models import ConsistencyResult, FeatureBreakdown, SegmentResult, Tier1Result, Tier2Result, now_iso
 from .tier1_adapter import Tier1CheckpointScorer
+from .tier2_ensemble import Tier2ProductionEnsemble
 
 
 def clamp(value: float) -> float:
@@ -28,8 +30,7 @@ class SignalStats:
 
 
 def signal_stats(audio: AudioSegment) -> SignalStats:
-    samples = audio.samples
-    values = [int.from_bytes(samples[i:i + 2], "little", signed=True) for i in range(0, len(samples), 2)]
+    values = struct.unpack(f"<{len(audio.samples) // 2}h", audio.samples)
     rms = int(math.sqrt(sum(value * value for value in values) / len(values)))
     crossings = sum((a >= 0) != (b >= 0) for a, b in zip(values, values[1:]))
     # 20ms windows: near-silence approximates pauses/breathing opportunity.
@@ -51,24 +52,12 @@ class HeuristicTier1Scorer:
         return clamp(0.45 * uniformity + 0.35 * no_pause + 0.20 * zcr_anomaly)
 
 
-class HeuristicTier2Scorer:
-    """Three independent stand-in heads plus learned-fusion-shaped weighting."""
-
-    def score(self, stats: SignalStats) -> tuple[float, dict[str, float]]:
-        spectral = clamp(0.55 * (1 - min(stats.variation / 0.4, 1)) + 0.45 * min(abs(stats.zero_crossing_rate - 0.09) / 0.12, 1))
-        prosody = clamp(0.70 * (1 - min(stats.silence_ratio / 0.15, 1)) + 0.30 * (1 - min(stats.variation / 0.3, 1)))
-        waveform = clamp(0.60 * min(abs(stats.zero_crossing_rate - 0.07) / 0.13, 1) + 0.40 * (1 - min(stats.rms / 6000, 1)))
-        contributions = {"wav2vec2_xlsr": spectral, "wavlm_large": prosody, "rawnet3": waveform}
-        # Fixed coefficients define the interface only; production uses trained logistic fusion.
-        return clamp(0.36 * spectral + 0.38 * prosody + 0.26 * waveform), contributions
-
-
 class DetectionService:
-    def __init__(self, alert_threshold: float = 0.7) -> None:
+    def __init__(self, alert_threshold: float = 0.7, tier2: Tier2ProductionEnsemble | None = None) -> None:
         self.alert_threshold = alert_threshold
         self._tier1 = HeuristicTier1Scorer()
         self._tier1_checkpoint = Tier1CheckpointScorer()
-        self._tier2 = HeuristicTier2Scorer()
+        self._tier2 = tier2
 
     def analyze(self, audio: AudioSegment, start_s: float, speaker_similarity: float | None = None, include_features: bool = True) -> SegmentResult:
         if start_s < 0:
@@ -76,7 +65,7 @@ class DetectionService:
         stats = signal_stats(audio)
         with ThreadPoolExecutor(max_workers=2) as pool:
             tier1_job = pool.submit(self._run_tier1, audio, stats)
-            tier2_job = pool.submit(self._run_tier2, stats)
+            tier2_job = pool.submit(self._run_tier2, audio)
             tier1, tier2 = tier1_job.result(), tier2_job.result()
         consistency = self._consistency(speaker_similarity)
         risk = clamp(0.35 * tier1.score + 0.65 * tier2.score + (0.15 if consistency.flag == "inconsistent" else 0))
@@ -91,11 +80,16 @@ class DetectionService:
         score = self._tier1_checkpoint.score(audio) if self._tier1_checkpoint.available else self._tier1.score(stats)
         return Tier1Result(score, label(score), round((time.perf_counter() - started) * 1000))
 
-    def _run_tier2(self, stats: SignalStats) -> Tier2Result:
+    def _run_tier2(self, audio: AudioSegment) -> Tier2Result:
         started = time.perf_counter()
-        score, contributions = self._tier2.score(stats)
-        confidence = clamp(abs(score - 0.5) * 2)
-        return Tier2Result(score, label(score), confidence, contributions, round((time.perf_counter() - started) * 1000))
+        # No heuristic fallback: scoring is unavailable until all four trained
+        # and exported Tier 2 models have been configured.
+        if self._tier2 is None:
+            self._tier2 = Tier2ProductionEnsemble()
+        output = self._tier2.score(audio)
+        return Tier2Result(output.score, label(output.score), output.confidence, output.contributions,
+                           round((time.perf_counter() - started) * 1000), output.auxiliary,
+                           output.disagreement, output.quality.score, output.model_status)
 
     @staticmethod
     def _consistency(similarity: float | None) -> ConsistencyResult:

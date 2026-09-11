@@ -1,0 +1,19 @@
+services:
+  api:
+    build: .
+    image: voice-clone-detection:latest
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      TIER1_CHECKPOINT: /app/checkpoints/tier1_mlaad.pt
+    volumes:
+      # Mount your trained checkpoint into the container (read-only).
+      # Without it the API still runs, but Tier 1 falls back to heuristics.
+      - ./checkpoints:/app/checkpoints:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

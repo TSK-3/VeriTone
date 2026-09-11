@@ -1,0 +1,10 @@
+{
+  "models": {
+    "wav2vec2_xlsr": {"path": "checkpoints/wav2vec2_xlsr.onnx", "output_is_logit": true},
+    "wavlm_large": {"path": "checkpoints/wavlm_large.onnx", "output_is_logit": true},
+    "rawnet3": {"path": "checkpoints/rawnet3.onnx", "output_is_logit": true},
+    "aasist": {"path": "checkpoints/aasist.onnx", "output_is_logit": true}
+  },
+  "fusion": {"logit_weights": {"wav2vec2_xlsr": 0.25, "wavlm_large": 0.25, "rawnet3": 0.30, "aasist": 0.30, "prosody": 0.15}},
+  "calibration": {"temperature": 1.0, "bias": 0.0}
+}

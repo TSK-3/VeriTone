@@ -22,6 +22,10 @@ class Tier2Result:
     confidence: float
     encoder_contributions: dict[str, float]
     latency_ms: int
+    auxiliary_signals: dict[str, float] | None = None
+    disagreement: float | None = None
+    capture_quality: float | None = None
+    model_status: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
