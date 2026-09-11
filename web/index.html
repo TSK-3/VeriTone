@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Verity — Voice Integrity Console</title>
+    <title>VeriTone — Voice Integrity Console</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -13,9 +13,8 @@
     <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
     <main class="shell">
       <header>
-        <a class="brand" href="/"><span class="brand-mark">V</span><span>verity</span></a>
+        <a class="brand" href="/"><span class="brand-mark">V</span><span>VeriTone</span></a>
         <div class="connection"><span class="status-dot"></span><span id="connection-label">Detector ready</span></div>
-        <button class="quiet-button" id="demo-button">Load sample view</button>
       </header>
 
       <section class="hero">
@@ -33,24 +32,29 @@
           <label class="toggle-row"><input id="feature-only" type="checkbox" /><span class="toggle"></span><span>Feature-only audit mode</span></label>
           <button id="analyze-button" class="primary-button" disabled>Analyze segment <span>→</span></button>
           <p id="form-message" class="form-message" aria-live="polite">Choose an audio segment to begin.</p>
+          <section class="validation-guide">
+            <p class="eyebrow">VALIDATION GUIDE</p>
+            <p>Score each dataset clip separately. Use a new call reference for every clip, then compare an <strong>original</strong> clip with a <strong>spoof</strong> clip.</p>
+            <p class="guide-note">Lower risk is expected for original speech; higher risk is expected for spoofed speech. The result is a risk signal, not ground-truth accuracy.</p>
+          </section>
         </aside>
 
         <section class="results-panel" aria-live="polite">
           <div class="results-header"><div><p class="eyebrow">RUNNING RISK PROFILE</p><h2 id="result-title">Awaiting audio</h2></div><div class="api-state" id="api-state">IDLE</div></div>
           <div class="score-row">
-            <div class="score-card"><p>COMBINED RISK</p><div class="gauge" id="gauge"><span id="risk-score">—</span><small>/ 100</small></div><strong id="risk-label">No analysis yet</strong></div>
+            <div class="score-card"><p>RUNNING RISK</p><div class="gauge" id="gauge"><span id="risk-score">—</span><small>/ 100</small></div><strong id="risk-label">No analysis yet</strong><small class="score-context" id="score-context">Aggregates the current call</small></div>
             <div class="timeline-card"><div class="timeline-top"><p>RECENT SEGMENTS</p><span id="segment-count">0 analyzed</span></div><div class="chart" id="chart"><div class="empty-chart">Your segment risk trend appears here.</div></div><div class="chart-axis"><span>EARLIER</span><span>NOW</span></div></div>
           </div>
           <div id="alert-box" class="alert-box hidden"><div class="alert-symbol">!</div><div><strong>Secondary verification recommended</strong><p id="alert-copy">Risk crossed your configured operating threshold.</p></div></div>
           <div class="detail-grid">
-            <article><div class="detail-title"><span>Tier 1</span><small>REAL-TIME</small></div><div class="metric"><strong id="tier1-score">—</strong><span id="tier1-latency">— ms</span></div><p>Lightweight streaming score</p></article>
-            <article><div class="detail-title"><span>Tier 2</span><small>ENSEMBLE</small></div><div class="metric"><strong id="tier2-score">—</strong><span id="tier2-confidence">— confidence</span></div><p>Deep analysis and fusion</p></article>
+            <article><div class="detail-title"><span>Tier 1</span><small>TRAINED CNN</small></div><div class="metric"><strong id="tier1-score">—</strong><span id="tier1-latency">— ms</span></div><p id="tier1-label">Checkpoint model · pending</p></article>
+            <article><div class="detail-title"><span>Tier 2</span><small>HEURISTIC</small></div><div class="metric"><strong id="tier2-score">—</strong><span id="tier2-confidence">— confidence</span></div><p id="tier2-label">Heuristic ensemble · pending</p></article>
             <article><div class="detail-title"><span>Consistency</span><small>REFERENCE</small></div><div class="metric"><strong id="consistency">—</strong></div><p id="consistency-copy">No comparison performed</p></article>
           </div>
           <section class="breakdown"><div class="breakdown-heading"><p class="eyebrow">SIGNAL BREAKDOWN</p><span id="feature-status">PENDING</span></div><div id="features" class="feature-list"><p class="muted">Feature insights will be shown here after analysis.</p></div><div class="contributions"><p>ENSEMBLE CONTRIBUTIONS</p><div id="contribution-bars" class="bar-list"></div></div></section>
         </section>
       </section>
-      <footer><span>VERITY / SIH26104</span><span>Audio is not written to disk or included in the audit trail.</span></footer>
+      <footer><span>VERITONE / SIH26104</span><span>Audio is not written to disk or included in the audit trail.</span></footer>
     </main>
     <script src="app.js"></script>
   </body>

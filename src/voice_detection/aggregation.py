@@ -10,7 +10,7 @@ from .models import SegmentResult
 class RunningRiskAggregator:
     """Recency-weighted score accumulator for one live call."""
 
-    def __init__(self, window_size: int = 5, alert_threshold: float = 0.7, min_evidence: int = 3) -> None:
+    def __init__(self, window_size: int = 5, alert_threshold: float = 0.5, min_evidence: int = 3) -> None:
         self._scores: deque[float] = deque(maxlen=window_size)
         self.alert_threshold = alert_threshold
         self.min_evidence = min_evidence
