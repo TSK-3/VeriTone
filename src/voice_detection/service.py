@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import statistics
 import struct
 import time
@@ -8,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from .audio import AudioSegment
+from .demo_ensemble import DemoTier2Ensemble
 from .models import ConsistencyResult, FeatureBreakdown, SegmentResult, Tier1Result, Tier2Result, now_iso
 from .tier1_adapter import Tier1CheckpointScorer
 from .tier2_ensemble import Tier2ProductionEnsemble
@@ -57,6 +59,10 @@ class DetectionService:
         self.alert_threshold = alert_threshold
         self._tier1 = HeuristicTier1Scorer()
         self._tier1_checkpoint = Tier1CheckpointScorer()
+        # TIER2_MODE: "strict" (default in production) demands the four trained ONNX
+        # models via TIER2_MANIFEST; "demo" (default locally) uses the clearly labelled
+        # DemoTier2Ensemble so the live-call demo works without model artifacts.
+        self._tier2_mode = (os.getenv("TIER2_MODE") or "demo").lower()
         self._tier2 = tier2
 
     def analyze(self, audio: AudioSegment, start_s: float, speaker_similarity: float | None = None, include_features: bool = True) -> SegmentResult:
@@ -82,10 +88,15 @@ class DetectionService:
 
     def _run_tier2(self, audio: AudioSegment) -> Tier2Result:
         started = time.perf_counter()
-        # No heuristic fallback: scoring is unavailable until all four trained
-        # and exported Tier 2 models have been configured.
+        # Strict mode: no fallback at all — scoring is unavailable until all four
+        # trained and exported Tier 2 models have been configured via the manifest.
+        # Demo mode: signal-based DemoTier2Ensemble, every member labelled
+        # "demo_signals" so it can never be mistaken for a trained-model verdict.
         if self._tier2 is None:
-            self._tier2 = Tier2ProductionEnsemble()
+            if self._tier2_mode == "strict" or os.getenv("TIER2_MANIFEST"):
+                self._tier2 = Tier2ProductionEnsemble()
+            else:
+                self._tier2 = DemoTier2Ensemble()
         output = self._tier2.score(audio)
         return Tier2Result(output.score, label(output.score), output.confidence, output.contributions,
                            round((time.perf_counter() - started) * 1000), output.auxiliary,
