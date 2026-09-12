@@ -1,0 +1,21 @@
+Metadata-Version: 2.4
+Name: voice-clone-detection
+Version: 0.1.0
+Summary: Privacy-first streaming synthetic speech detection MVP
+Requires-Python: >=3.11
+Requires-Dist: fastapi<1.0,>=0.115
+Requires-Dist: uvicorn[standard]<1.0,>=0.30
+Provides-Extra: dev
+Requires-Dist: httpx>=0.27; extra == "dev"
+Requires-Dist: pytest>=8.0; extra == "dev"
+Provides-Extra: ml
+Requires-Dist: torch>=2.3; extra == "ml"
+Requires-Dist: numpy>=1.26; extra == "ml"
+Provides-Extra: data
+Requires-Dist: huggingface_hub>=0.20; extra == "data"
+Requires-Dist: hf_transfer>=0.1; extra == "data"
+Provides-Extra: tier2
+Requires-Dist: numpy>=1.26; extra == "tier2"
+Requires-Dist: onnx>=1.17; extra == "tier2"
+Requires-Dist: onnxruntime>=1.20; extra == "tier2"
+Requires-Dist: transformers>=4.57; extra == "tier2"
