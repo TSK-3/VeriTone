@@ -14,3 +14,11 @@ checkpoints/*
 !checkpoints/.gitkeep
 .hf_cache/
 .ipynb_checkpoints/
+
+.install.*
+.server.*
+.tunnel.*
+src/voice_clone_detection.egg-info/
+start_demo.ps1
+cloudflared.exe
+audit/

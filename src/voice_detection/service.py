@@ -1,22 +1,23 @@
 from __future__ import annotations
 
-import math
 import os
 import statistics
-import struct
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from .audio import AudioSegment
+from .audio import AudioSegment, frame_rms, unpack_pcm16
 from .demo_ensemble import DemoTier2Ensemble
 from .models import ConsistencyResult, FeatureBreakdown, SegmentResult, Tier1Result, Tier2Result, now_iso
 from .tier1_adapter import Tier1CheckpointScorer
-from .tier2_ensemble import Tier2ProductionEnsemble
+from .tier2_ensemble import Tier2ProductionEnsemble, bounded
+
+# Reused across calls; a per-request pool would dominate segment latency.
+_POOL = ThreadPoolExecutor(max_workers=2)
 
 
 def clamp(value: float) -> float:
-    return round(max(0.0, min(1.0, value)), 4)
+    return round(bounded(value), 4)
 
 
 def label(score: float) -> str:
@@ -32,19 +33,20 @@ class SignalStats:
 
 
 def signal_stats(audio: AudioSegment) -> SignalStats:
-    values = struct.unpack(f"<{len(audio.samples) // 2}h", audio.samples)
-    rms = int(math.sqrt(sum(value * value for value in values) / len(values)))
+    values = unpack_pcm16(audio.samples)
+    if not values:
+        return SignalStats(0, 0.0, 1.0, 0.0)
+    rms = int((sum(v * v for v in values) / len(values)) ** 0.5)
     crossings = sum((a >= 0) != (b >= 0) for a, b in zip(values, values[1:]))
-    # 20ms windows: near-silence approximates pauses/breathing opportunity.
-    window = max(1, int(audio.sample_rate * 0.02))
-    windows = [values[i:i + window] for i in range(0, len(values), window)]
-    silence_ratio = sum(1 for chunk in windows if chunk and math.sqrt(sum(x * x for x in chunk) / len(chunk)) < 350) / len(windows)
-    variation = statistics.pstdev(abs(v) for v in values) / 32768 if len(values) > 1 else 0.0
-    return SignalStats(rms, crossings / max(1, len(values) - 1), silence_ratio, variation)
+    # 20 ms windows: near-silence approximates pauses/breathing opportunity.
+    energies = frame_rms(values, audio.sample_rate)
+    silence_ratio = sum(1 for level in energies if level < 350) / len(energies)
+    variation = statistics.pstdev(abs(v) for v in values) / 32768
+    return SignalStats(rms, crossings / (len(values) - 1), silence_ratio, variation)
 
 
 class HeuristicTier1Scorer:
-    """Latency-safe development adapter; replace with an edge model checkpoint."""
+    """Latency-safe fallback for deployments without a TIER1_CHECKPOINT."""
 
     def score(self, stats: SignalStats) -> float:
         # Synthetic clips often present unusually uniform energy and pause patterns.
@@ -69,10 +71,9 @@ class DetectionService:
         if start_s < 0:
             raise ValueError("start_s must be non-negative")
         stats = signal_stats(audio)
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            tier1_job = pool.submit(self._run_tier1, audio, stats)
-            tier2_job = pool.submit(self._run_tier2, audio)
-            tier1, tier2 = tier1_job.result(), tier2_job.result()
+        tier1_job = _POOL.submit(self._run_tier1, audio, stats)
+        tier2_job = _POOL.submit(self._run_tier2, audio)
+        tier1, tier2 = tier1_job.result(), tier2_job.result()
         consistency = self._consistency(speaker_similarity)
         risk = clamp(0.35 * tier1.score + 0.65 * tier2.score + (0.15 if consistency.flag == "inconsistent" else 0))
         features = self._features(stats) if include_features else None

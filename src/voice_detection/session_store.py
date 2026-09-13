@@ -12,6 +12,7 @@ class Session:
     scenario: str = "support_call"
     language_hint: str | None = None
     feature_only_logging: bool = False
+    speaker_id: str | None = None
     context: dict = field(default_factory=dict)
     records: list[dict] = field(default_factory=list)
     aggregator: RunningRiskAggregator = field(default_factory=RunningRiskAggregator)

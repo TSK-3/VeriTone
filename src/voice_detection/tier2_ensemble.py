@@ -6,13 +6,13 @@ export makes model servers/versioning deterministic and prevents feature skew.
 """
 from __future__ import annotations
 
-import json, math, os, statistics, struct
+import json, math, os, statistics
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .audio import AudioSegment
+from .audio import AudioSegment, frame_rms, unpack_pcm16
 
 MODEL_NAMES = ("wav2vec2_xlsr", "wavlm_large", "rawnet3", "aasist")
 
@@ -57,8 +57,8 @@ class OnnxBinaryScorer:
         return bounded(sigmoid(value) if self.output_is_logit else value)
 
 def inspect_quality(audio: AudioSegment) -> AudioQuality:
-    values = struct.unpack(f"<{len(audio.samples)//2}h", audio.samples)
-    frame = max(1, int(audio.sample_rate*.02)); energies = [math.sqrt(sum(x*x for x in values[i:i+frame])/max(1,len(values[i:i+frame]))) for i in range(0,len(values),frame)]
+    values = unpack_pcm16(audio.samples)
+    energies = frame_rms(values, audio.sample_rate)
     mean = sum(energies)/max(1,len(energies)); pauses = sum(x < 350 for x in energies)/max(1,len(energies))
     clipped = sum(abs(v) > 31_000 for v in values)/max(1,len(values)); duration_ok = .75 <= audio.duration_s <= 3.5
     energy_quality = min(mean / 1500, 1)
@@ -67,8 +67,7 @@ def inspect_quality(audio: AudioSegment) -> AudioQuality:
 
 def prosody_signal(audio: AudioSegment, quality: AudioQuality) -> dict[str, float]:
     """Independent behavioral evidence: pause rhythm, energy microvariation and cadence stability."""
-    values = struct.unpack(f"<{len(audio.samples)//2}h", audio.samples); frame = max(1, int(audio.sample_rate*.02))
-    energies = [math.sqrt(sum(x*x for x in values[i:i+frame])/max(1,len(values[i:i+frame]))) for i in range(0,len(values),frame)]
+    energies = frame_rms(unpack_pcm16(audio.samples), audio.sample_rate)
     energy_cv = statistics.pstdev(energies)/(statistics.fmean(energies)+1) if len(energies)>1 else 0
     rhythm = bounded(1-min(energy_cv/.75,1)); pause_anomaly = bounded(abs(quality.pause_ratio-.12)/.25)
     return {"prosody_score": round(.58*rhythm+.42*pause_anomaly,4), "pause_ratio": quality.pause_ratio, "rhythm_anomaly": round(rhythm,4)}

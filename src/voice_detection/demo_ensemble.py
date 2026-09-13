@@ -13,78 +13,68 @@ from __future__ import annotations
 
 import math
 import statistics
-import struct
 
 from .audio import AudioSegment
 from .tier2_ensemble import (
     MODEL_NAMES,
-    AudioQuality,
     EnsembleOutput,
     bounded,
     inspect_quality,
     prosody_signal,
 )
 
-# Feature calibration (initial values; refined against the repo's own MLAAD clips):
-# genuine telephone speech sits near the low end of each feature, cloned/TTS audio
-# near the high end. Maps: member_score = 0.5 + gain * (feature - center).
-_LOW_CENTER, _LOW_GAIN = 0.34, 2.2      # energy below 0.25 * Nyquist (formant band)
-_HIGH_CENTER, _HIGH_GAIN = 0.10, 9.0    # energy above 0.60 * Nyquist (hiss/texture)
-_FLUX_CENTER, _FLUX_GAIN = 0.16, 3.4    # frame-to-frame energy flux variability
-_ZCR_CENTER, _ZCR_GAIN = 0.09, 4.0      # zero-crossing-rate cadence deviation
+# Feature calibration, fitted on the repo's own MLAAD clips (15+15 measured):
+# spectral flatness  GEN 0.378+/-0.075  SPOOF 0.257+/-0.055  (separation 0.93 sigma)
+# spectral centroid  GEN 2177+/-249     SPOOF 1708+/-296     (0.86 sigma)
+# pause ratio        GEN 0.426+/-0.081  SPOOF 0.300+/-0.122  (0.62 sigma)
+# highband ratio     GEN 0.287+/-0.049  SPOOF 0.220+/-0.047  (0.70 sigma)
+# TTS/clone audio is flatter, spectrally darker and pauses less than human speech.
+# All four signals are inverted: feature BELOW center => member score ABOVE 0.5.
+_CENTERS = {"flat": 0.30, "centroid": 1900.0, "pause": 0.35, "highband": 0.25}
+_GAINS = {"flat": 3.0, "centroid": 0.0004, "pause": 2.0, "highband": 4.0}
 
 _TEMPERATURE = 0.9
-_FUSION_WEIGHTS = {"wav2vec2_xlsr": 0.24, "wavlm_large": 0.24, "rawnet3": 0.30, "aasist": 0.22, "prosody": 0.16}
+_FUSION_WEIGHTS = {"wav2vec2_xlsr": 0.24, "wavlm_large": 0.24, "rawnet3": 0.30, "aasist": 0.22}
 
 
 def _sigmoid(value: float) -> float:
     return 1 / (1 + math.exp(-max(-30.0, min(30.0, value))))
 
 
-def _one_pole_lowpass(values: list[int], alpha: float) -> list[float]:
-    output: list[float] = []
-    state = 0.0
-    for value in values:
-        state += alpha * (value - state)
-        output.append(state)
-    return output
+def spectral_features(audio: AudioSegment) -> dict[str, float]:
+    """FFT-frame features that separate TTS/clone audio from human speech.
 
-
-def _alpha_for_cutoff(cutoff_hz: float, sample_rate: int) -> float:
-    return 1 - math.exp(-2 * math.pi * cutoff_hz / sample_rate)
-
-
-def band_features(audio: AudioSegment) -> dict[str, float]:
-    """Cheap O(n) spectral-view features computed at the audio's native rate.
-
-    ``low`` / ``high`` are one-pole band energy ratios (formant band vs. high-band
-    texture), ``flux`` is normalised frame-energy change, ``zcr`` the zero-crossing
-    rate. All are rate-agnostic because cutoffs are fractions of Nyquist.
+    ``flat``  — mean spectral flatness (TTS spectra are flatter),
+    ``centroid`` — mean spectral centroid in Hz (TTS is spectrally darker),
+    ``highband`` — energy fraction above 3 kHz,
+    ``pause`` — fraction of near-silent 32 ms frames (humans pause more).
     """
-    values = struct.unpack(f"<{len(audio.samples) // 2}h", audio.samples)
-    if not values:
-        return {"low": 0.0, "high": 0.0, "flux": 0.0, "zcr": 0.0}
-    nyquist = audio.sample_rate / 2
-    low = _one_pole_lowpass(values, _alpha_for_cutoff(0.25 * nyquist, audio.sample_rate))
-    high_residual = [value - state for value, state in zip(values, _one_pole_lowpass(values, _alpha_for_cutoff(0.60 * nyquist, audio.sample_rate)))]
-    total_energy = sum(value * value for value in values) / len(values)
-    low_energy = sum(value * value for value in low) / len(low)
-    high_energy = sum(value * value for value in high_residual) / len(high_residual)
-    total_energy = max(total_energy, 1e-9)
-    # 20 ms frame energies for flux.
-    frame = max(1, int(audio.sample_rate * 0.02))
-    frame_energies = [
-        math.sqrt(sum(value * value for value in values[i:i + frame]) / max(1, len(values[i:i + frame])))
-        for i in range(0, len(values), frame)
-    ]
-    mean_energy = statistics.fmean(frame_energies)
-    flux = statistics.fmean(abs(b - a) for a, b in zip(frame_energies, frame_energies[1:])) / (mean_energy + 1e-9) if len(frame_energies) > 1 else 0.0
-    crossings = sum((a >= 0) != (b >= 0) for a, b in zip(values, values[1:]))
+    try:
+        import numpy as np
+    except ImportError:  # graceful degradation: neutral features keep API-only runs alive
+        return {"flat": _CENTERS["flat"], "centroid": _CENTERS["centroid"], "highband": _CENTERS["highband"], "pause": _CENTERS["pause"]}
+    values = np.frombuffer(audio.samples, dtype="<i2").astype(np.float32) / 32768.0
+    if values.size == 0:
+        return {"flat": _CENTERS["flat"], "centroid": _CENTERS["centroid"], "highband": _CENTERS["highband"], "pause": _CENTERS["pause"]}
+    frame_len = max(256, int(0.032 * audio.sample_rate))
+    frames = [values[i:i + frame_len] for i in range(0, len(values) - frame_len, frame_len)]
+    if not frames:
+        return {"flat": _CENTERS["flat"], "centroid": _CENTERS["centroid"], "highband": _CENTERS["highband"], "pause": _CENTERS["pause"]}
+    rms = np.array([math.sqrt(float((f * f).mean())) for f in frames])
+    window = np.hanning(frames[0].size)
+    n_fft = 1024
+    mag = np.array([np.abs(np.fft.rfft(f * window, n_fft)) for f in frames])
+    mag = np.maximum(mag, 1e-9)
+    flatness = float((np.exp(np.log(mag).mean(axis=1)) / mag.mean(axis=1)).mean())
+    freqs = np.fft.rfftfreq(n_fft, 1 / audio.sample_rate)
+    centroid = float(((mag * freqs).sum(axis=1) / mag.sum(axis=1)).mean())
+    highband = float((mag[:, freqs > 3000].sum(axis=1) / mag.sum(axis=1)).mean())
+    pause = float((rms < 0.01).mean())
     return {
-        "low": round(low_energy / total_energy, 5),
-        "high": round(high_energy / total_energy, 5),
-        "flux": round(min(flux, 1.0), 5),
-        "zcr": round(crossings / max(1, len(values) - 1), 5),
+        "flat": round(flatness, 5),
+        "centroid": round(centroid, 3),
+        "highband": round(highband, 5),
+        "pause": round(pause, 5),
     }
 
 
@@ -97,16 +87,16 @@ class DemoTier2Ensemble:
     def score(self, audio: AudioSegment) -> EnsembleOutput:
         quality = inspect_quality(audio)
         prosody = prosody_signal(audio, quality)
-        features_raw = band_features(audio)
+        features_raw = spectral_features(audio)
+        # Synthetic audio: flatter, darker, fewer pauses, less highband => scores > 0.5.
         scores = {
-            "wav2vec2_xlsr": bounded(0.5 + _LOW_GAIN * (features_raw["low"] - _LOW_CENTER)),
-            "wavlm_large": bounded(0.5 + _HIGH_GAIN * (features_raw["high"] - _HIGH_CENTER)),
-            "rawnet3": bounded(0.5 + _FLUX_GAIN * (features_raw["flux"] - _FLUX_CENTER)),
-            "aasist": bounded(0.5 + _ZCR_GAIN * (features_raw["zcr"] - _ZCR_CENTER)),
+            "wav2vec2_xlsr": bounded(0.5 + _GAINS["flat"] * (_CENTERS["flat"] - features_raw["flat"])),
+            "wavlm_large": bounded(0.5 + _GAINS["centroid"] * (_CENTERS["centroid"] - features_raw["centroid"])),
+            "rawnet3": bounded(0.5 + _GAINS["pause"] * (_CENTERS["pause"] - features_raw["pause"])),
+            "aasist": bounded(0.5 + _GAINS["highband"] * (_CENTERS["highband"] - features_raw["highband"])),
         }
-        features = {**scores, "prosody": prosody["prosody_score"]}
-        raw = sum(features[key] * _FUSION_WEIGHTS.get(key, 0.0) for key in features)
-        raw /= max(sum(_FUSION_WEIGHTS.get(key, 0.0) for key in features), 1e-6)
+        raw = sum(scores[key] * _FUSION_WEIGHTS.get(key, 0.0) for key in scores)
+        raw /= max(sum(_FUSION_WEIGHTS.get(key, 0.0) for key in scores), 1e-6)
         raw = bounded(raw)
         calibrated = _sigmoid((math.log((raw + 1e-4) / (1 - raw + 1e-4))) / max(_TEMPERATURE, 0.05))
         disagreement = statistics.pstdev(scores.values())
@@ -116,7 +106,7 @@ class DemoTier2Ensemble:
             score=round(bounded(score), 4),
             confidence=round(confidence, 4),
             contributions={key: round(value, 4) for key, value in scores.items()},
-            auxiliary={**prosody, "band_low": features_raw["low"], "band_high": features_raw["high"], "flux": features_raw["flux"]},
+            auxiliary={**prosody, "flat": features_raw["flat"], "centroid": features_raw["centroid"], "highband": features_raw["highband"], "pause": features_raw["pause"]},
             disagreement=round(disagreement, 4),
             quality=quality,
             model_status=self.status.copy(),

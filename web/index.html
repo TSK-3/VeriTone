@@ -53,6 +53,35 @@
           </div>
           <section class="breakdown"><div class="breakdown-heading"><p class="eyebrow">SIGNAL BREAKDOWN</p><span id="feature-status">PENDING</span></div><div id="features" class="feature-list"><p class="muted">Feature insights will be shown here after analysis.</p></div><div class="contributions"><p>ENSEMBLE CONTRIBUTIONS</p><div id="contribution-bars" class="bar-list"></div></div></section>
         </section>
+
+        <aside class="live-call-panel" id="live-panel">
+          <div class="card-heading"><p class="eyebrow">LIVE CALL · TWILIO</p><span class="step">⦿</span></div>
+          <div class="live-status-row">
+            <span class="live-dot" id="live-dot"></span>
+            <strong id="live-label">No live call</strong>
+            <span class="api-state" id="live-state">IDLE</span>
+          </div>
+          <div class="live-risk-row">
+            <div class="gauge gauge-live" id="live-gauge"><span id="live-risk">—</span><small>/ 100</small></div>
+            <div class="live-meta">
+              <p id="live-action">Awaiting call…</p>
+              <p class="muted" id="live-evidence">0 segments analyzed</p>
+              <p class="muted" id="live-triggers">No trigger words heard</p>
+              <p class="muted" id="live-peak">Peak risk: —</p>
+            </div>
+          </div>
+          <div class="live-bars" id="live-bars"></div>
+          <p class="eyebrow">LIVE TRANSCRIPT</p>
+          <div class="transcript" id="transcript"><p class="muted">Call transcript with trigger-word highlights appears here.</p></div>
+          <p class="eyebrow">SMS PREVENTION ALERTS <span id="sms-mode" class="sms-mode">console mode</span></p>
+          <div class="sms-list" id="sms-list"><p class="muted">Alerts sent to the customer appear here.</p></div>
+          <div class="demo-controls">
+            <button id="demo-scenario-button" class="primary-button">▶ Run simulated scam call</button>
+            <button id="demo-scamcall-button" class="primary-button">📞 Call me — cloned voice</button>
+            <button id="demo-sms-button" class="quiet-button-blocked">✉ Send test SMS</button>
+            <p class="muted" id="demo-note">Simulated call streams real cloned-voice WAVs through the same live pipeline (VAD → Tier 1 → Tier 2 → SMS rules). "Call me" plays a cloned scam script into a real Twilio call to your phone.</p>
+          </div>
+        </aside>
       </section>
       <footer><span>VERITONE / SIH26104</span><span>Audio is not written to disk or included in the audit trail.</span></footer>
     </main>

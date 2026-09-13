@@ -46,17 +46,20 @@ WAV segment (1–3 s, 16-bit PCM) ──POST /v1/calls/{id}/segments──▶ de
   contains no audio or embeddings; `?feature_only_logging=true` drops even the
   feature breakdown from the stored record.
 
-### Measured performance (current checkpoint)
+### Measured performance (current checkpoint, full set)
 
-| Split | Accuracy* | Note |
-|---|---|---|
-| Train sample (`data/`, 60 genuine + 60 spoof) | **0.82** | center-crop, threshold 0.5 |
-| Unseen sample (`data_unseen/`, German, 60 + 60) | **0.67** | different language + TTS systems |
+| Split | Files (gen/spoof) | Accuracy @0.5 | EER | Mean latency | p95 |
+|---|---|---|---|---|---|
+| MLAAD train sample (`data/`) | 12,470 (6,070 / 6,400) | **0.72** | **0.283** | 7.1 ms | 9.5 ms |
+| Held-out unseen (`data_unseen/`, German + unseen TTS) | 752 (375 / 377) | **0.64** | **0.353** | 9.4 ms | 13.3 ms |
 
-\*Spot-checks on 120-file samples, not full-set evals — re-run
-`train_tier1.py`'s final `sliding-window` report for the authoritative numbers.
-Model: **597,057 params** (under the 2M edge budget), **~3.6 ms / 1.5 s window**
-on CPU (this machine; re-benchmark p95 on target edge hardware).
+Center-crop evaluation over the complete splits (one 1.5 s window per file,
+threshold 0.5), run with `scripts/benchmark_tier1.py`. Score means:
+genuine 0.336 vs spoof 0.668 on the train split (+0.333 separation) and
+0.452 vs 0.682 on the unseen split (+0.230). Re-run the script after retraining;
+use `--mode sliding` for the authoritative serving-path numbers on a sample.
+Model: **597,057 params** (under the 2M edge budget), single 1.5 s window scored
+in ~7–10 ms on CPU (this machine; re-benchmark p95 on target edge hardware).
 
 ---
 
@@ -64,19 +67,26 @@ on CPU (this machine; re-benchmark p95 on target edge hardware).
 
 ```
 ├── src/voice_detection/      # the service (pip package)
-│   ├── api.py                # FastAPI routes + dashboard mount
+│   ├── api.py                # FastAPI routes + Twilio WebSocket + dashboard mount
 │   ├── service.py            # Tier 1 / Tier 2 orchestration
 │   ├── tier1_cnn.py          # trainable causal CNN architecture
 │   ├── tier1_adapter.py      # TIER1_CHECKPOINT loader (checkpoint > heuristic)
 │   ├── train_tier1.py        # training script (CPU or CUDA)
 │   ├── aggregation.py        # per-call running-risk aggregator
-│   ├── audio.py / models.py  # WAV decode, PRD output schema
-├── scripts/download_mlaad_tiny.py  # MLAAD dataset fetcher (tiny slice or --full)
+│   ├── alerts.py             # trigger words + TwilioClient (SMS, calls, status)
+│   ├── twilio_stream.py      # Media Streams WS: µ-law → 16 kHz → VAD → scoring
+│   ├── twilio_play.py        # cloned-voice scam audio + TwiML playback helpers
+│   ├── audit_store.py        # durable Fernet-encrypted audit db (SQLite) + erasure
+│   ├── speaker_refs.py       # consented speaker references (spectral embedding)
+│   ├── audio.py / models.py  # audio primitives (decode/resample/RMS), PRD schema
+├── scripts/                  # benchmark_tier1.py (full-set accuracy/EER/latency)
+│                             # + download_mlaad_tiny.py (dataset fetcher)
 ├── notebooks/colab_train_tier1.ipynb  # GPU training notebook (Colab T4)
 ├── web/                      # live-call dashboard (index.html, app.js, styles.css)
 ├── tests/                    # pytest contract tests
 ├── checkpoints/              # *.pt live here (git-ignored, .gitkeep keeps the dir)
 ├── data/ data_unseen/        # training / held-out WAVs (git-ignored)
+├── audit/                    # encrypted audit db (git-ignored, created on first run)
 ├── Dockerfile / docker-compose.yml / .dockerignore / .env.example
 ├── voice-clone-detection-prd.md    # full PRD
 └── pyproject.toml
@@ -129,6 +139,9 @@ curl "http://127.0.0.1:8000/v1/calls/demo/audit"
 |---|---|---|
 | `TIER1_CHECKPOINT` | *(unset → heuristic)* | Path to `{"model_state_dict": …, "config": …}` checkpoint. When set, the CNN replaces the Tier 1 heuristic. |
 | `PORT` | `8000` | Used by the Docker `CMD`; uvicorn flag locally. |
+| `AUDIT_STORE` | `on` | `off` disables the durable audit db (in-memory only). |
+| `AUDIT_STORE_PATH` | `audit/veritone-audit.db` | SQLite location for the Fernet-encrypted audit store (volume-mounted in Docker). |
+| `AUDIT_STORE_KEY` | *(auto → `<db>.key`)* | Fernet key; if unset a key is generated beside the db and reused. |
 
 Alerting behaviour (`RunningRiskAggregator`: window 5, threshold 0.7,
 min 3 evidence segments) is code-configured in `api.py` / `aggregation.py`.
@@ -143,6 +156,13 @@ min 3 evidence segments) is code-configured in `api.py` / `aggregation.py`.
   raw WAV bytes in the body. Returns the audit record below.
   Errors: `415` non-WAV content type, `422` invalid WAV / bad `speaker_similarity`.
 - `GET /v1/calls/{call_id}/audit` → list of derived records for the call.
+- `GET /v1/audit?session_id=&limit=` → decrypted records from the durable
+  encrypted store; `DELETE /v1/audit/{session_id}` → right-to-erasure.
+- `POST /v1/speakers/{speaker_id}/reference?consent=true` — enrol a consented
+  speaker reference (raw WAV body; `403` without consent). `GET /v1/speakers/{id}`
+  → status; `DELETE /v1/speakers/{id}` → erasure. Sessions created with a
+  `speaker_id` check every segment against the reference live
+  (`consistency_check.similarity_score`).
 - `GET /` → dashboard. `GET /docs` → OpenAPI UI.
 
 Example segment response (abridged):
@@ -250,9 +270,20 @@ pip install -e ".[dev]"
 python -m pytest tests -q
 ```
 
-Tests pin the PRD contract: audit records carry the three encoder slots and no
-audio bytes, invalid `speaker_similarity` is rejected, and alerts require
-aggregated evidence across segments (3 passed).
+37 tests pin the PRD contract and the live-call path: audit records carry the
+three encoder slots and no audio bytes, invalid `speaker_similarity` is rejected,
+alerts require aggregated evidence across segments, the Twilio µ-law → VAD →
+scoring → trigger-SMS pipeline runs end-to-end, the shared audio primitives
+(WAV decode, resampling, frame RMS) are covered, and the durable encrypted audit
+store + consented speaker references round-trip with erasure enforced.
+
+For a live end-to-end check (server running on :8901):
+
+```powershell
+$env:TIER1_CHECKPOINT = "checkpoints\tier1_mlaad.pt"
+Start-Process .venv\Scripts\python.exe -ArgumentList '-m','uvicorn','voice_detection.api:app','--port','8901'
+python scripts\smoke_test_audit.py   # enrol → score → consistency → erasure
+```
 
 ---
 
@@ -270,12 +301,19 @@ without audio.
 
 ## 10. Roadmap
 
-1. Replace `HeuristicTier2Scorer` with ONNX/PyTorch ensemble adapters
-   (wav2vec2-XLSR + WavLM + RawNet3 + AASIST back-ends, learned fusion).
-2. VAD-backed websocket/media adapter emitting 1–3 s speech segments.
-3. Durable encrypted feature-only audit store + consented speaker references.
-4. Full-set benchmark (EER/latency) on ASVspoof + VoIP/codec augmentations;
-   refresh the §1 table with sliding-window numbers from the new checkpoint.
+1. **Done** — Tier 2 ensemble: `Tier2ProductionEnsemble` (ONNX + manifest, strict)
+   replaces the old heuristic; local runs use the labelled `DemoTier2Ensemble`.
+2. **Done** — VAD-backed Twilio Media Streams adapter emitting 1–3 s speech
+   segments (`twilio_stream.py`).
+3. **Done** — durable Fernet-encrypted audit store (`audit_store.py`, SQLite +
+   right-to-erasure) and consented speaker references (`speaker_refs.py`) with
+   live consistency checking per segment.
+4. **Done** — full-set benchmark on the complete MLAAD splits (12,470 + 752
+   files): accuracy 0.72 / EER 0.283 on the train sample, 0.64 / EER 0.353 on
+   the held-out unseen split; §1 table refreshed. Next: the same benchmark on
+   ASVspoof + VoIP/codec augmentations with the next trained checkpoint.
+5. Multi-worker deployment — the registry/session store are in-process by
+   design; move to Redis or a DB when scaling beyond one process.
 
 ### Tier 2 production ensemble path
 

@@ -8,14 +8,12 @@ transcription events (``<Start><Transcription>``) drive the trigger-word SMS rul
 """
 from __future__ import annotations
 
-import array
 import base64
 import math
-import sys
 from uuid import uuid4
 
 from .alerts import AlertEngine, detect_trigger_words
-from .audio import AudioSegment
+from .audio import AudioSegment, pack_pcm16, resample_linear
 from .live import LiveCallRegistry
 from .pipeline import analyze_into_session
 from .service import DetectionService
@@ -30,8 +28,9 @@ def _build_mulaw_table() -> list[int]:
     table = []
     for byte in range(256):
         sign = 1 if byte & 0x80 else -1
-        exponent = (byte >> 4) & 0x07
-        mantissa = byte & 0x0F
+        bits = ~byte & 0x7F  # undo the wire's one's-complement payload (G.711)
+        exponent = (bits >> 4) & 0x07
+        mantissa = bits & 0x0F
         magnitude = ((2 * mantissa + 33) << exponent) - 33
         table.append(sign * magnitude * 4)
     return table
@@ -48,38 +47,12 @@ def pcm16_to_mulaw(sample: int) -> int:
     """Inverse µ-law encoder (tests/simulators): 16-bit PCM sample → wire byte."""
     sample = max(-32768, min(32767, int(sample)))
     sign_bit = 0x80 if sample >= 0 else 0x00
-    magnitude = min(abs(sample) >> 2, 8031) + 33  # 14-bit domain + bias
+    magnitude14 = min(abs(sample) >> 2, 8031)
     exponent = 0
-    while magnitude > 63:
-        magnitude >>= 1
+    while exponent < 7 and ((63 << exponent) - 33) < magnitude14:
         exponent += 1
-    mantissa = magnitude & 0x0F
+    mantissa = max(0, min(15, (((magnitude14 + 33) >> exponent) - 33) // 2))
     return sign_bit | (~((exponent << 4) | mantissa) & 0x7F)
-
-
-def _pack_pcm16(values: list[int]) -> bytes:
-    block = array.array("h", values)
-    if sys.byteorder == "big":
-        block.byteswap()
-    return block.tobytes()
-
-
-def resample_to_16k(samples: list[int], src_rate: int) -> list[int]:
-    """Linear-interpolation resample to 16 kHz (8 kHz telephony in, no deps)."""
-    if src_rate == SAMPLE_RATE:
-        return samples
-    if not samples:
-        return []
-    ratio = SAMPLE_RATE / src_rate
-    output = []
-    for i in range(int(len(samples) * ratio)):
-        position = i / ratio
-        left = int(position)
-        fraction = position - left
-        a = samples[left]
-        b = samples[left + 1] if left + 1 < len(samples) else a
-        output.append(int(a + (b - a) * fraction))
-    return output
 
 
 class SpeechSegmenter:
@@ -92,6 +65,7 @@ class SpeechSegmenter:
         self.silence_frames = int(silence_seconds * 50)
         self.threshold = threshold
         self._buf: list[int] = []
+        self._scanned = 0  # sample offset into _buf (buffer holds int samples)
         self._total = 0
         self._voiced = 0
         self._trailing_silence = 0
@@ -100,36 +74,47 @@ class SpeechSegmenter:
     def feed(self, samples: list[int]) -> list[bytes]:
         self._buf.extend(samples)
         emitted: list[bytes] = []
-        index = 0
-        limit = len(self._buf)
-        while index + FRAME_SAMPLES <= limit:
-            frame = self._buf[index:index + FRAME_SAMPLES]
+        while True:  # scan each new 20 ms frame exactly once
+            available = (len(self._buf) - self._scanned) // FRAME_SAMPLES
+            if available <= 0:
+                break
+            start = self._scanned
+            frame = self._buf[start:start + FRAME_SAMPLES]
             rms = math.sqrt(sum(value * value for value in frame) / FRAME_SAMPLES)
+            self._scanned += FRAME_SAMPLES
+            self._total += 1
             if rms >= self.threshold:
                 self._voiced += 1
                 self._trailing_silence = 0
             else:
                 self._trailing_silence += 1
-            index += FRAME_SAMPLES
-            self._total += 1
-            voiced_ratio = self._voiced / self._total
-            if (
-                (self._total >= self.max_frames and self._voiced > 0)
-                or (self._total >= self.min_frames and voiced_ratio >= 0.35)
-                or (self._voiced > 0 and self._trailing_silence >= self.silence_frames)
+            if self._voiced == 0 and self._total >= self.max_frames:
+                self._buf = self._buf[self._scanned:]  # drop pure-silence window
+                self._scanned = 0
+                self._total = self._voiced = self._trailing_silence = 0
+            elif (
+                self._voiced > 0
+                and self._total >= self.min_frames
+                and (self._trailing_silence >= self.silence_frames or self._total >= self.max_frames)
             ):
-                emitted.append(_pack_pcm16(self._buf[:self._total * FRAME_SAMPLES]))
-                self._buf = self._buf[self._total * FRAME_SAMPLES:]
-                limit = len(self._buf)
-                index = 0
+                emitted.append(pack_pcm16(self._buf[:self._scanned]))
+                self._buf = self._buf[self._scanned:]
+                self._scanned = 0
                 self._total = self._voiced = self._trailing_silence = 0
                 self.segments_emitted += 1
-            elif self._voiced == 0 and self._total >= self.max_frames:
-                self._buf = self._buf[index:]  # drop pure-silence buffer, keep tail frame
-                limit = len(self._buf)
-                index = 0
-                self._total = self._voiced = self._trailing_silence = 0
         return emitted
+
+    def flush(self) -> list[bytes]:
+        """Emit any remaining voiced audio (call when the stream ends)."""
+        if self._voiced > 0 and self._scanned >= FRAME_SAMPLES * 10:  # >=0.2 s
+            chunk = pack_pcm16(self._buf[:self._scanned])
+            self.segments_emitted += 1
+        else:
+            chunk = None
+        self._buf = []
+        self._scanned = 0
+        self._total = self._voiced = self._trailing_silence = 0
+        return [chunk] if chunk else []
 
 
 class TwilioCallHandler:
@@ -191,24 +176,30 @@ class TwilioCallHandler:
         if not payload:
             return None
         decoded = mulaw_to_pcm16(base64.b64decode(payload))
-        speech = self.segmenter.feed(resample_to_16k(decoded, 8000))
+        speech = self.segmenter.feed(resample_linear(decoded, 8_000, SAMPLE_RATE))
         if not speech:
             return None
         if self.session_id is None:
             self.session_id = f"twilio-{uuid4()}"
-        scored = 0
         for pcm_bytes in speech:
-            audio = AudioSegment(samples=pcm_bytes, sample_rate=SAMPLE_RATE,
-                                 duration_s=len(pcm_bytes) / (SAMPLE_RATE * 2))
-            try:
-                analyze_into_session(self._ensure_session(), audio, self._start_s,
-                                     self.service, registry=self.registry, alerts=self.alerts)
-            except RuntimeError as exc:  # strict-mode Tier 2 unconfigured
-                return {"handled": "media_error", "error": str(exc)}
-            self._start_s += audio.duration_s
-            self.segments_scored += 1
-            scored += 1
-        return {"handled": "media", "segments": scored} if scored else None
+            error = self._score_pcm(pcm_bytes)
+            if error is not None:  # strict-mode Tier 2 unconfigured
+                return error
+        return {"handled": "media", "segments": len(speech)}
+
+    def _score_pcm(self, pcm_bytes: bytes) -> dict | None:
+        """Score one VAD segment; returns an error payload instead of raising."""
+        audio = AudioSegment(samples=pcm_bytes, sample_rate=SAMPLE_RATE,
+                             duration_s=len(pcm_bytes) / (SAMPLE_RATE * 2))
+        error: dict | None = None
+        try:
+            analyze_into_session(self._ensure_session(), audio, self._start_s,
+                                 self.service, registry=self.registry, alerts=self.alerts)
+        except RuntimeError as exc:
+            error = {"handled": "media_error", "error": str(exc)}
+        self._start_s += audio.duration_s
+        self.segments_scored += 1
+        return error
 
     def _current_risk(self) -> int:
         call = self.registry.get(self.session_id or "")
@@ -239,6 +230,8 @@ class TwilioCallHandler:
         return {"handled": "transcription", "triggers": found}
 
     def _stop(self) -> dict:
+        for pcm_bytes in self.segmenter.flush():
+            self._score_pcm(pcm_bytes)  # strict Tier 2 errors don't block a clean stop
         if self.session_id:
             self.registry.complete(self.session_id)
         return {"handled": "stop", "session_id": self.session_id, "segments": self.segments_scored}

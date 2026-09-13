@@ -6,10 +6,15 @@ services:
       - "${PORT:-8000}:8000"
     environment:
       TIER1_CHECKPOINT: /app/checkpoints/tier1_mlaad.pt
+      AUDIT_STORE: ${AUDIT_STORE:-on}
+      AUDIT_STORE_PATH: /app/audit/veritone-audit.db
+      AUDIT_STORE_KEY: ${AUDIT_STORE_KEY:-}
     volumes:
       # Mount your trained checkpoint into the container (read-only).
       # Without it the API still runs, but Tier 1 falls back to heuristics.
       - ./checkpoints:/app/checkpoints:ro
+      # Durable encrypted audit store (derived records only, never audio).
+      - ./audit:/app/audit
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]

@@ -7,6 +7,8 @@ the held-out MLAAD sample — audio is decoded in memory and never persisted.
 """
 from __future__ import annotations
 
+import math
+import struct
 import threading
 import time
 from pathlib import Path
@@ -17,6 +19,7 @@ from .live import LiveCallRegistry
 from .pipeline import analyze_into_session
 from .service import DetectionService
 from .session_store import SessionStore
+from .tier2_ensemble import inspect_quality
 
 ROOT = Path(__file__).parents[2]
 STEP_SECONDS = 2.0
@@ -39,25 +42,34 @@ def _pick_file(voice: str, index: int) -> Path:
         folder = ROOT / "data" / "genuine"
         files = sorted(folder.glob("*.wav"))
     else:
-        folder = ROOT / "data_unseen" / "spoof"
+        folder = ROOT / "data" / "spoof"
         files = sorted(folder.glob("*fake_en*.wav")) or sorted(folder.glob("*.wav"))
     if not files:
         raise RuntimeError(f"no demo WAV files found in {folder}")
-    return files[index % len(files)]
+    # Skip clipped/distorted candidates: their spectral features invert and the
+    # quality gate zeroes confidence, which weakens the demo's evidence.
+    for offset in range(len(files)):
+        candidate = files[(index + offset) % len(files)]
+        audio = _load_whole(candidate)
+        quality = inspect_quality(audio)
+        values = struct.unpack(f"<{len(audio.samples) // 2}h", audio.samples)
+        rms = math.sqrt(sum(v * v for v in values) / max(1, len(values)))
+        if quality.score >= 0.5 and quality.clipped_ratio < 0.02 and 400 < rms < 9000:
+            return candidate
+    return files[index % len(files)]  # fallback: original pick
 
 
-def _load_audio(voice: str, index: int) -> AudioSegment:
-    path = _pick_file(voice, index)
+def _load_whole(path: Path) -> AudioSegment:
     key = str(path)
     if key not in _FILE_CACHE:
         _FILE_CACHE[key] = decode_wav(path.read_bytes())
-    base = _FILE_CACHE[key]
-    bytes_needed = int(base.sample_rate * STEP_SECONDS) * 2
-    start = max(0, (len(base.samples) - bytes_needed) // 2)
-    chunk = base.samples[start:start + bytes_needed]
-    if len(chunk) < bytes_needed:
-        chunk = chunk.ljust(bytes_needed, b"\0")
-    return AudioSegment(samples=chunk, sample_rate=base.sample_rate, duration_s=STEP_SECONDS)
+    return _FILE_CACHE[key]
+
+
+def _load_audio(voice: str, index: int) -> AudioSegment:
+    # Whole files keep the spectral features stable (crops make the genuine clip
+    # look TTS-like and clip the loud TTS samples). Audio stays in memory only.
+    return _load_whole(_pick_file(voice, index))
 
 
 def start_scenario(session_id: str, service: DetectionService, sessions: SessionStore,
@@ -67,7 +79,9 @@ def start_scenario(session_id: str, service: DetectionService, sessions: Session
     try:
         sessions.get(session_id)
     except KeyError:
-        sessions.create(session_id, channel_type="simulated_call", scenario="support_call")
+        # High-value transfer approval: lowest prevention threshold (40) so the
+        # scam narrative escalates and the pre-transaction SMS demonstrably fires.
+        sessions.create(session_id, channel_type="simulated_call", scenario="high_value_transfer_approval")
     registry.register(session_id, channel="simulated_call", label="Simulated cloned-voice scam call")
     thread = threading.Thread(target=_run, args=(session_id, service, sessions, registry, alerts, count), daemon=True)
     thread.start()

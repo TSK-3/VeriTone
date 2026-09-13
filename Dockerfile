@@ -15,7 +15,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
       "torch>=2.3" "numpy>=1.26" \
  && pip install --no-cache-dir \
-      "fastapi>=0.115,<1.0" "uvicorn[standard]>=0.30,<1.0"
+      "fastapi>=0.115,<1.0" "uvicorn[standard]>=0.30,<1.0" "cryptography>=42,<46"
 
 COPY pyproject.toml ./
 COPY src/ ./src/
@@ -23,7 +23,7 @@ COPY web/ ./web/
 COPY checkpoints/ ./checkpoints/
 
 RUN useradd --create-home --uid 10001 appuser \
- && chown -R appuser:appuser /app
+ && mkdir -p /app/audit && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8000

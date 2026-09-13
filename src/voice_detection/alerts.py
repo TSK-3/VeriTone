@@ -1,4 +1,5 @@
-"""Trigger-word detection and SMS alerting for the live-call prevention workflow.
+"""Trigger-word detection and Twilio alerting (SMS + outbound calls) for the
+live-call prevention workflow.
 
 Two independent alert reasons exist:
 
@@ -7,15 +8,20 @@ Two independent alert reasons exist:
 * ``trigger``    — fraud trigger words (``transaction``, ``send``, ``money``, ...)
   were spoken while the AI-voice risk is elevated.
 
-SMS delivery uses the Twilio REST API when credentials are configured. Without
-credentials the message is logged to the console and the live dashboard as
-``logged_console`` so the demo pipeline is always visible end-to-end.
+All Twilio REST access lives in ``TwilioClient`` (SMS, outbound calls, call
+status). Without credentials SMS/calls degrade to console logging as
+``logged_console`` so the pipeline is always visible end-to-end.
 """
 from __future__ import annotations
 
 import os
+import re
+import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+
+import httpx
+
+from .models import now_iso
 
 TRIGGER_WORDS: tuple[str, ...] = (
     "transaction", "send", "money", "transfer", "payment", "refund", "otp", "pin",
@@ -24,23 +30,14 @@ TRIGGER_WORDS: tuple[str, ...] = (
     "invoice", "pay",
 )
 
+_TRIGGER_RE = re.compile(r"\b(" + "|".join(TRIGGER_WORDS) + r")\b", re.IGNORECASE)
+
 THRESHOLD_ACTIONS = {"step_up_verification", "escalate", "block"}
 
 
 def detect_trigger_words(text: str) -> list[str]:
     """Return trigger words present in ``text`` (case-insensitive, word boundaries)."""
-    lowered = f" {text.lower()} "
-    found = []
-    for word in TRIGGER_WORDS:
-        for tail in (" ", ",", ".", "?", "!"):
-            if f" {word}{tail}" in lowered:
-                found.append(word)
-                break
-    return found
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return [word.lower() for word in _TRIGGER_RE.findall(text)]
 
 
 def build_sms_body(risk: int, words: list[str], action: str) -> str:
@@ -82,16 +79,29 @@ class AlertRecord:
         }
 
 
-class SmsSender:
-    """Twilio SMS via REST (``httpx``); degrades to console logging without creds."""
+class TwilioClient:
+    """All Twilio REST access: SMS alerts, outbound calls, call status.
+
+    Degrades to console logging when credentials are absent.
+    """
+
+    _API = "https://api.twilio.com/2010-04-01/Accounts/{sid}"
 
     def __init__(self, account_sid: str | None = None, auth_token: str | None = None,
                  from_number: str | None = None, default_to: str | None = None) -> None:
-        self.account_sid = account_sid or os.getenv("TWILIO_ACCOUNT_SID", "")
-        self.auth_token = auth_token or os.getenv("TWILIO_AUTH_TOKEN", "")
-        self.from_number = from_number or os.getenv("TWILIO_FROM_NUMBER", "")
-        self.default_to = default_to or os.getenv("ALERT_TO_NUMBER", "")
+        # Explicit "" disables the channel (tests must never send real SMS);
+        # only None defers to the environment.
+        self.account_sid = os.getenv("TWILIO_ACCOUNT_SID", "") if account_sid is None else account_sid
+        self.auth_token = os.getenv("TWILIO_AUTH_TOKEN", "") if auth_token is None else auth_token
+        self.from_number = os.getenv("TWILIO_FROM_NUMBER", "") if from_number is None else from_number
+        self.default_to = os.getenv("ALERT_TO_NUMBER", "") if default_to is None else default_to
+        self.content_sid = os.getenv("TWILIO_CONTENT_SID", "")
+        self._template_sid: str | None = None
         self.configured = bool(self.account_sid and self.auth_token and self.from_number)
+
+    def _request(self, method: str, path: str, data: dict | None = None, timeout: float = 10.0) -> httpx.Response:
+        return httpx.request(method, self._API.format(sid=self.account_sid) + path,
+                             data=data, auth=(self.account_sid, self.auth_token), timeout=timeout)
 
     def send(self, to: str | None, body: str) -> tuple[str, str | None]:
         """Return ``(status, error)``; status is ``sent`` | ``logged_console`` | ``error``."""
@@ -100,33 +110,72 @@ class SmsSender:
             print(f"[VeriTone SMS · console mode] to={recipient or '<ALERT_TO_NUMBER unset>'}: {body}")
             return "logged_console", None
         try:
-            import httpx
-        except ImportError:  # pragma: no cover - httpx ships in the dev extra
-            print(f"[VeriTone SMS · console mode] install httpx to enable real SMS: {body}")
-            return "logged_console", None
-        try:
-            response = httpx.post(
-                f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Messages.json",
-                data={"From": self.from_number, "To": recipient, "Body": body},
-                auth=(self.account_sid, self.auth_token),
-                timeout=8.0,
-            )
+            response = self._request("POST", "/Messages.json",
+                                     {"From": self.from_number, "To": recipient, "Body": body}, timeout=8.0)
         except Exception as exc:  # a network hiccup must never break the live call
             print(f"[VeriTone SMS · error] {exc}")
             return "error", str(exc)
         if 200 <= response.status_code < 300:
             return "sent", None
-        return "error", f"Twilio {response.status_code}: {response.text[:180]}"
+        error_text = f"Twilio {response.status_code}: {response.text[:180]}"
+        # Trial accounts (esp. India) only allow predefined templates (code 572006).
+        if "572006" in error_text or "template" in error_text.lower():
+            template_status, template_error = self._send_with_template(recipient)
+            if template_status == "sent":
+                return "sent", None
+            return template_status, template_error or error_text
+        return "error", error_text
+
+    def _send_with_template(self, recipient: str) -> tuple[str, str | None]:
+        """Trial-policy fallback: send via one of Twilio's predefined content templates."""
+        candidates = [sid for sid in (self.content_sid, self._template_sid) if sid]
+        if not candidates:
+            try:
+                listing = httpx.get("https://content.twilio.com/v1/Content",
+                                    auth=(self.account_sid, self.auth_token), timeout=10.0)
+            except Exception as exc:
+                return "error", f"template list failed: {exc}"
+            if listing.status_code == 200:
+                candidates = [c.get("sid") for c in listing.json().get("contents", []) if c.get("sid")]
+        for sid in candidates[:8]:
+            for variables in ('{}', '{"1":"VeriTone"}'):
+                response = self._request("POST", "/Messages.json",
+                                         {"From": self.from_number, "To": recipient,
+                                          "ContentSid": sid, "ContentVariables": variables}, timeout=8.0)
+                if 200 <= response.status_code < 300:
+                    self._template_sid = sid
+                    return "sent", None
+        return "error", (
+            "trial restriction: this account can only send predefined SMS templates. "
+            "Fix (30s): Twilio Console → Messaging → Content Tools → copy the Content SID of a "
+            "predefined template (starts with HX) → set TWILIO_CONTENT_SID, restart. "
+            "Upgrading the account removes this entirely."
+        )
+
+    def place_call(self, to: str, twiml_url: str) -> dict:
+        """Place an outbound call bridged to ``twiml_url``; returns ``{"call_sid", "twilio_status"}``."""
+        response = self._request("POST", "/Calls.json",
+                                 {"To": to, "From": self.from_number, "Url": twiml_url}, timeout=15.0)
+        if not 200 <= response.status_code < 300:
+            raise RuntimeError(f"Twilio call failed: {response.text[:300]}")
+        payload = response.json()
+        return {"call_sid": payload.get("sid"), "twilio_status": payload.get("status")}
+
+    def call_status(self, call_sid: str) -> dict:
+        """Return ``{"status", "duration_s"}`` for a placed call."""
+        response = self._request("GET", f"/Calls/{call_sid}.json", timeout=15.0)
+        if not 200 <= response.status_code < 300:
+            raise RuntimeError(f"Twilio status failed: {response.text[:200]}")
+        data = response.json()
+        return {"status": data.get("status"), "duration_s": data.get("duration")}
 
 
 class AlertEngine:
     """Decides *when* to alert, applies cooldowns, sends the SMS and keeps the log."""
 
-    def __init__(self, sender: SmsSender | None = None, cooldown_s: float | None = None,
+    def __init__(self, sender: TwilioClient | None = None, cooldown_s: float | None = None,
                  trigger_risk_floor: int | None = None, sink: list | None = None) -> None:
-        import time as _time
-        self._time = _time
-        self.sender = sender or SmsSender()
+        self.sender = sender or TwilioClient()
         self.cooldown_s = float(cooldown_s if cooldown_s is not None else os.getenv("ALERT_COOLDOWN_S", "60"))
         self.trigger_risk_floor = int(trigger_risk_floor if trigger_risk_floor is not None
                                       else os.getenv("ALERT_TRIGGER_RISK", "40"))
@@ -135,7 +184,7 @@ class AlertEngine:
 
     def _cooldown_ok(self, session_id: str, kind: str) -> bool:
         last = self._last_sent.get((session_id, kind))
-        return last is None or (self._time.time() - last) >= self.cooldown_s
+        return last is None or (time.time() - last) >= self.cooldown_s
 
     def _dispatch(self, session_id: str, kind: str, risk: int, action: str,
                   words: list[str], to: str | None = None) -> AlertRecord:
@@ -147,7 +196,7 @@ class AlertEngine:
             sms_to=to or self.sender.default_to or None, sms_error=error, body=body,
         )
         self.sink.append(record.as_dict())
-        self._last_sent[(session_id, kind)] = self._time.time()
+        self._last_sent[(session_id, kind)] = time.time()
         print(f"[VeriTone ALERT] {kind} risk={risk} words={words} sms={status} call={session_id}")
         return record
 
