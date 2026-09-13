@@ -270,12 +270,18 @@ pip install -e ".[dev]"
 python -m pytest tests -q
 ```
 
-37 tests pin the PRD contract and the live-call path: audit records carry the
+38 tests pin the PRD contract and the live-call path: audit records carry the
 three encoder slots and no audio bytes, invalid `speaker_similarity` is rejected,
 alerts require aggregated evidence across segments, the Twilio µ-law → VAD →
 scoring → trigger-SMS pipeline runs end-to-end, the shared audio primitives
 (WAV decode, resampling, frame RMS) are covered, and the durable encrypted audit
-store + consented speaker references round-trip with erasure enforced.
+store + consented speaker references round-trip with erasure enforced — including
+the dashboard upload path (`speaker_id` on `/v1/calls/{id}/segments`).
+
+The dashboard's left panel enrols a consented speaker reference from the selected
+WAV (◈ Enrol reference) and shows its status; with a reference on file every
+analyzed segment is compared against it and the Consistency card reports live
+similarity.
 
 For a live end-to-end check (server running on :8901):
 

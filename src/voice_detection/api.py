@@ -302,10 +302,12 @@ async def twilio_scam_call(request: Request) -> dict:
 
 
 @app.post("/v1/calls/{call_id}/segments")
-async def legacy_segment(call_id: str, request: Request, start_s: float = Query(0, ge=0), speaker_similarity: float | None = Query(None), feature_only_logging: bool = Query(False)) -> dict:
+async def legacy_segment(call_id: str, request: Request, start_s: float = Query(0, ge=0), speaker_similarity: float | None = Query(None), feature_only_logging: bool = Query(False), speaker_id: str | None = Query(None)) -> dict:
     try: sessions.get(call_id)
     except KeyError:
-        sessions.create(call_id, feature_only_logging=feature_only_logging)
+        # speaker_id links the auto-created session to a consented reference so the
+        # live consistency check runs on every uploaded segment.
+        sessions.create(call_id, feature_only_logging=feature_only_logging, speaker_id=speaker_id or None)
         REGISTRY.register(call_id, channel="upload", label="Dashboard upload")
     return await submit_audio(call_id, request, start_s, speaker_similarity)
 

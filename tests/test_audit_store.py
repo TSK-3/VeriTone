@@ -166,3 +166,15 @@ def test_reference_and_live_consistency_over_rest(client: TestClient) -> None:
     assert client.delete("/v1/audit/sess-rest").json()["deleted_records"] >= 1
     assert client.delete("/v1/speakers/spk-9").json()["deleted_references"] == 1
     assert client.get("/v1/speakers/spk-9").status_code == 404
+
+
+def test_legacy_upload_endpoint_links_speaker_id(client: TestClient) -> None:
+    body = wav_bytes(unpack_pcm16(tone(3.0).samples))
+    enrol = client.post("/v1/speakers/spk-legacy/reference?consent=true", content=body, headers={"content-type": "audio/wav"})
+    assert enrol.status_code == 200
+    record = client.post("/v1/calls/legacy-1/segments?start_s=0&speaker_id=spk-legacy",
+                         content=body, headers={"content-type": "audio/wav"}).json()
+    consistency = record["segment"]["consistency_check"]
+    assert consistency["ran"] is True and consistency["similarity_score"] > 0.85
+    assert client.delete("/v1/audit/legacy-1").json()["deleted_records"] >= 1
+    assert client.delete("/v1/speakers/spk-legacy").json()["deleted_references"] == 1

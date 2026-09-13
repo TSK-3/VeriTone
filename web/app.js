@@ -14,6 +14,7 @@ $("analyze-button").addEventListener("click", async () => {
   const callId = $("call-id").value.trim() || "unnamed-call";
   const query = new URLSearchParams({ start_s: $("start-time").value || "0", feature_only_logging: $("feature-only").checked });
   const similarity = $("similarity").value; if (similarity) query.set("speaker_similarity", similarity);
+  const speakerId = $("speaker-id").value.trim(); if (speakerId) query.set("speaker_id", speakerId);
   setLoading(true);
   try {
     const response = await fetch(`/v1/calls/${encodeURIComponent(callId)}/segments?${query}`, { method: "POST", headers: { "Content-Type": "audio/wav" }, body: file });
@@ -25,6 +26,50 @@ $("analyze-button").addEventListener("click", async () => {
     $("result-title").textContent = `Clip risk · ${body.risk_score}%`;
   } catch (error) { $("form-message").textContent = error.message; $("api-state").textContent = "ERROR"; }
   finally { setLoading(false); }
+});
+
+// --- speaker reference (consented) ---------------------------------------------
+const speakerInput = $(\"speaker-id\");
+const enrolButton = $(\"enrol-button\");
+const refStatus = $(\"ref-status\");
+
+function refreshEnrolEnabled() {
+  enrolButton.disabled = !(fileInput.files[0] && speakerInput.value.trim());
+  if (enrolButton.disabled && !speakerInput.value.trim()) refStatus.textContent = \"no reference on file\";
+}
+
+async function checkReference() {
+  const id = speakerInput.value.trim();
+  if (!id) { refStatus.textContent = \"no reference on file\"; refStatus.classList.remove(\"on-file\"); return; }
+  try {
+    const res = await fetch(`/v1/speakers/${encodeURIComponent(id)}`);
+    if (res.ok) {
+      const body = await res.json();
+      refStatus.textContent = body.consent ? `on file · ${body.embedding_dims}-dim · consented` : \"no reference on file\";
+      refStatus.classList.toggle(\"on-file\", !!body.consent);
+    } else { refStatus.textContent = \"no reference on file\"; refStatus.classList.remove(\"on-file\"); }
+  } catch { /* server restarting during demo — keep last frame */ }
+}
+
+speakerInput.addEventListener(\"input\", () => { refreshEnrolEnabled(); checkReference(); });
+fileInput.addEventListener(\"change\", refreshEnrolEnabled);
+
+enrolButton.addEventListener(\"click\", async () => {
+  const id = speakerInput.value.trim();
+  const file = fileInput.files[0];
+  if (!id || !file) return;
+  enrolButton.disabled = true;
+  const original = enrolButton.innerHTML;
+  enrolButton.innerHTML = \"⏳ Enrolling…\";
+  try {
+    const res = await fetch(`/v1/speakers/${encodeURIComponent(id)}/reference?consent=true`, { method: \"POST\", headers: { \"Content-Type\": \"audio/wav\" }, body: file });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || \"Enrolment failed\");
+    refStatus.textContent = `on file · ${body.embedding_dims}-dim · consented`;
+    refStatus.classList.add(\"on-file\");
+    $(\"form-message\").textContent = \"✅ Speaker reference stored encrypted (consented). Audio was embedded in memory and discarded — later segments are checked against it live.\";
+  } catch (e) { $(\"form-message\").textContent = e.message; }
+  finally { enrolButton.innerHTML = original; refreshEnrolEnabled(); }
 });
 
 // --- live call panel: polls /v1/live every second -----------------------------
